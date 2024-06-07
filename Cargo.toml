@@ -6,3 +6,4 @@ edition = "2021"
 [dependencies]
 device_query = "2.1.0"
 mouse-rs = "=0.4.2"
+display-info = "0.5.1"
