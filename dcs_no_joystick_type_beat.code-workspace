@@ -1,0 +1,12 @@
+{
+	"folders": [
+		{
+			"path": "."
+		}
+	],
+	"settings": {
+		"codeium.enableInComments": false,
+		"codeium.enableExplainProblem": false,
+		"codeium.enableCodeLens": false
+	}
+}
