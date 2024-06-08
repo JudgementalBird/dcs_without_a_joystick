@@ -3,12 +3,13 @@ use std::time::{Duration,Instant}; // Time shit
 use display_info::DisplayInfo; // Gets monitor info
 use device_query::{DeviceQuery, DeviceState, Keycode}; // Listens to m+kb inputs
 use mouse_rs::Mouse; // Sets mouse inputs
-use vjoy::{VJoy, Error}; // Sets up vjoy feeder
+use vjoy::{VJoy, ButtonState, Error}; // Sets up vjoy feeder
 
 fn map_range(x: i32, from_range: (i32,i32), to_range: (i32,i32)) -> i32 { // Maps an x within one numeric range to another
     to_range.0 + (x - from_range.0) * (to_range.1 - to_range.0) / (from_range.1 - from_range.0)
 }
 
+#[derive(Debug, Copy, Clone)]
 struct Position { // i32 x,y position
     x: i32,
     y: i32,
@@ -66,27 +67,33 @@ fn main() -> Result<(), Error> {
     let device_state = DeviceState::new(); // Sets up m+kb device listening
     let mouse_out = Mouse::new(); // Sets up mouse output
 
-    let mut xy_toggle = Button {button_type: ButtonType::Toggle, ..Default::default()}; // XY Joystick toggle button
+    let mut mouse_toggle = Button {button_type: ButtonType::Toggle, ..Default::default()}; // Mouse toggle button
+    let mut mouse_saved_xy = Position {x: display_center.x, y: display_center.y}; // Mouse saved position
 
     loop {
 
         let mouse_in = device_state.get_mouse(); // Reads mouse state
         let kb_in = device_state.get_keys(); // Reads keyboard state
+        let mouse_toggle_last_state = mouse_toggle.state; // Gets last mouse toggle state
 
-        let joystick_xy = Position{ // Map mouse inside monitor to joystick's range
-            x: map_range(mouse_in.coords.0, (display_center.x-display_center.y,display_center.x+display_center.y), (0,32768)),
-            y: map_range(mouse_in.coords.1, (0,display_info[0].height as i32), (32768,0)),
+        // If LWin is pressed
+        mouse_toggle.update(kb_in.contains(&Keycode::LMeta)); // Toggle mouse
+        joystick.set_button(64, if kb_in.contains(&Keycode::LMeta) {ButtonState::Pressed} else {ButtonState::Released})?; // Toggle VJoy button 64 (For disabling TrackIR)
+
+        if !mouse_toggle.state & mouse_toggle_last_state { // If mouse has been toggled off
+            mouse_saved_xy = Position { x: mouse_in.coords.0, y: mouse_in.coords.1} // Save mouse coordinates
+        } else if mouse_toggle.state & !mouse_toggle_last_state { // If mouse has been toggled on
+            mouse_out.move_to(mouse_saved_xy.x,mouse_saved_xy.y).expect("Mouse couldn't be moved"); // Move mouse to saved position
         };
 
-        xy_toggle.update(kb_in.contains(&Keycode::X)); // If X is pressed, toggle center mouse
-
-        if xy_toggle.state { // If X is pressed, center mouse
-            mouse_out.move_to(display_center.x,display_center.y).expect("Mouse couldn't be moved");
+        let joystick_xy = Position { // Map mouse inside monitor to joystick's range
+        x: map_range(mouse_in.coords.0, (display_center.x-display_center.y,display_center.x+display_center.y), (0,32768)),
+        y: map_range(mouse_in.coords.1, (0,display_info[0].height as i32), (0,32768)),
         };
 
         // Set x and y axis on joystick
-        joystick.set_axis(1, if xy_toggle.state {16384} else {joystick_xy.x})?;
-        joystick.set_axis(2, if xy_toggle.state {16384} else {joystick_xy.y})?;
+        joystick.set_axis(1, joystick_xy.x)?;
+        joystick.set_axis(2, joystick_xy.y)?;
         
         vjoy.update_device_state(&joystick)?; // Update vjoy device
 
