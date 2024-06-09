@@ -49,7 +49,7 @@ impl Button {
                 if pressed & (!self.was_pressed) {
                     self.button_type = ButtonType::Hold(Instant::now());
                 };
-                self.state = pressed & (instant.elapsed() >= Duration::from_millis(500));
+                self.state = pressed & (instant.elapsed() >= Duration::from_millis(1000));
             }
         }
     }
@@ -69,16 +69,19 @@ fn main() -> Result<(), Error> {
 
     let mut mouse_toggle = Button {button_type: ButtonType::Toggle, ..Default::default()}; // Mouse toggle button
     let mut mouse_saved_xy = Position {x: display_center.x, y: display_center.y}; // Mouse saved position
+    let mut joystick_xy = Position {x: 16384, y: 16384}; // Joystick position
 
     loop {
 
         let mouse_in = device_state.get_mouse(); // Reads mouse state
         let kb_in = device_state.get_keys(); // Reads keyboard state
         let mouse_toggle_last_state = mouse_toggle.state; // Gets last mouse toggle state
+        let toggle1 = kb_in.contains(&Keycode::LMeta) & !kb_in.contains(&Keycode::LControl); // Check if toggle1 key is being pressed
+        let toggle2 = kb_in.contains(&Keycode::LMeta) & kb_in.contains(&Keycode::LControl); // Check if toggle1 key is being pressed
 
         // If LWin is pressed
-        mouse_toggle.update(kb_in.contains(&Keycode::LMeta)); // Toggle mouse
-        joystick.set_button(64, if kb_in.contains(&Keycode::LMeta) {ButtonState::Pressed} else {ButtonState::Released})?; // Toggle VJoy button 64 (For disabling TrackIR)
+        mouse_toggle.update(toggle1 | toggle2); // Toggle mouse
+        joystick.set_button(64, if toggle1 {ButtonState::Pressed} else {ButtonState::Released})?; // Toggle VJoy button 64 (For disabling TrackIR)
 
         if !mouse_toggle.state & mouse_toggle_last_state { // If mouse has been toggled off
             mouse_saved_xy = Position { x: mouse_in.coords.0, y: mouse_in.coords.1} // Save mouse coordinates
@@ -86,9 +89,11 @@ fn main() -> Result<(), Error> {
             mouse_out.move_to(mouse_saved_xy.x,mouse_saved_xy.y).expect("Mouse couldn't be moved"); // Move mouse to saved position
         };
 
-        let joystick_xy = Position { // Map mouse inside monitor to joystick's range
-        x: map_range(mouse_in.coords.0, (display_center.x-display_center.y,display_center.x+display_center.y), (0,32768)),
-        y: map_range(mouse_in.coords.1, (0,display_info[0].height as i32), (0,32768)),
+        if mouse_toggle.state {
+            joystick_xy = Position { // Map mouse inside monitor to joystick's range
+            x: map_range(mouse_in.coords.0, (display_center.x-display_center.y,display_center.x+display_center.y), (0,32768)),
+            y: map_range(mouse_in.coords.1, (0,display_info[0].height as i32), (0,32768)),
+            };
         };
 
         // Set x and y axis on joystick
