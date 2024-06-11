@@ -1,108 +1,71 @@
-use std::thread::sleep; // Sleep
-use std::time::{Duration,Instant}; // Time shit
-use display_info::DisplayInfo; // Gets monitor info
-use device_query::{DeviceQuery, DeviceState, Keycode}; // Listens to m+kb inputs
-use mouse_rs::Mouse; // Sets mouse inputs
-use vjoy::{VJoy, ButtonState, Error}; // Sets up vjoy feeder
+use libloading::{Library, Symbol};
+use bytemuck::{Pod, Zeroable};
+use std::thread::sleep;
+use std::time::Duration;
 
-fn map_range(x: i32, from_range: (i32,i32), to_range: (i32,i32)) -> i32 { // Maps an x within one numeric range to another
-    to_range.0 + (x - from_range.0) * (to_range.1 - to_range.0) / (from_range.1 - from_range.0)
+// Define the structure representing the tracking data
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Zeroable, Pod)]
+struct TirData {
+    frame: i32,
+    status: i32,
+    roll: f32,
+    pitch: f32,
+    yaw: f32,
+    tx: f32,
+    ty: f32,
+    tz: f32,
+    padding: [f32; 9],
+    cksum: i32,
 }
 
-#[derive(Debug, Copy, Clone)]
-struct Position { // i32 x,y position
-    x: i32,
-    y: i32,
-}
-
-enum ButtonType { // Button types
-    Toggle,
-    Hold(Instant),
-}
-
-struct Button { // Button struct
-    state: bool,
-    currently_pressed: bool,
-    was_pressed: bool,
-    button_type: ButtonType,
-}
-
-impl Default for Button { // Default Button settings
-    fn default() -> Self {
-        Button {
-            state: false,
-            currently_pressed: false,
-            was_pressed: false,
-            button_type: ButtonType::Toggle,
+fn main() {
+    // Load the DLL containing the NP_GetData function
+    let lib = match unsafe { Library::new("protocols/NPClient64_NJ.dll") } {
+        Ok(lib) => lib,
+        Err(e) => {
+            eprintln!("Failed to load DLL: {}", e);
+            return;
         }
-    }
-}
+    };
 
-impl Button {
-    fn update(&mut self, pressed: bool) { // Update Button state
-        self.was_pressed = self.currently_pressed;
-        self.currently_pressed = pressed;
-        match self.button_type {
-            ButtonType::Toggle => 
-                self.state = self.state ^ (pressed & (!self.was_pressed)),
-            ButtonType::Hold(instant) => {
-                if pressed & (!self.was_pressed) {
-                    self.button_type = ButtonType::Hold(Instant::now());
-                };
-                self.state = pressed & (instant.elapsed() >= Duration::from_millis(1000));
-            }
-        }
-    }
-
-}
-
-fn main() -> Result<(), Error> {
-
-    let mut vjoy = VJoy::from_default_dll_location()?; // Gets VJoy dll
-    let mut joystick = vjoy.get_device_state(1)?; // Set current controlled joystick to vjoy device 1
-
-    let display_info = DisplayInfo::all().expect("Display information couldn't be obtained"); // Gets monitor info
-    let display_center = Position{x: display_info[0].width as i32 / 2, y: display_info[0].height as i32 / 2,}; // Calculates center of main display
-
-    let device_state = DeviceState::new(); // Sets up m+kb device listening
-    let mouse_out = Mouse::new(); // Sets up mouse output
-
-    let mut mouse_toggle = Button {button_type: ButtonType::Toggle, ..Default::default()}; // Mouse toggle button
-    let mut mouse_saved_xy = Position {x: display_center.x, y: display_center.y}; // Mouse saved position
-    let mut joystick_xy = Position {x: 16384, y: 16384}; // Joystick position
-
-    loop {
-
-        let mouse_in = device_state.get_mouse(); // Reads mouse state
-        let kb_in = device_state.get_keys(); // Reads keyboard state
-        let mouse_toggle_last_state = mouse_toggle.state; // Gets last mouse toggle state
-        let toggle1 = kb_in.contains(&Keycode::LMeta) & !kb_in.contains(&Keycode::LControl); // Check if toggle1 key is being pressed
-        let toggle2 = kb_in.contains(&Keycode::LMeta) & kb_in.contains(&Keycode::LControl); // Check if toggle1 key is being pressed
-
-        // If LWin is pressed
-        mouse_toggle.update(toggle1 | toggle2); // Toggle mouse
-        joystick.set_button(64, if toggle1 {ButtonState::Pressed} else {ButtonState::Released})?; // Toggle VJoy button 64 (For disabling TrackIR)
-
-        if !mouse_toggle.state & mouse_toggle_last_state { // If mouse has been toggled off
-            mouse_saved_xy = Position { x: mouse_in.coords.0, y: mouse_in.coords.1} // Save mouse coordinates
-        } else if mouse_toggle.state & !mouse_toggle_last_state { // If mouse has been toggled on
-            mouse_out.move_to(mouse_saved_xy.x,mouse_saved_xy.y).expect("Mouse couldn't be moved"); // Move mouse to saved position
-        };
-
-        if mouse_toggle.state {
-            joystick_xy = Position { // Map mouse inside monitor to joystick's range
-            x: map_range(mouse_in.coords.0, (display_center.x-display_center.y,display_center.x+display_center.y), (0,32768)),
-            y: map_range(mouse_in.coords.1, (0,display_info[0].height as i32), (0,32768)),
+    unsafe {
+        // Define the function signature for NP_GetData
+        let np_get_data: Symbol<unsafe extern "C" fn(*mut TirData) -> i32> =
+            match lib.get(b"NP_GetData") {
+                Ok(symbol) => symbol,
+                Err(e) => {
+                    eprintln!("Failed to load NP_GetData function: {}", e);
+                    return;
+                }
             };
+
+        // Create a buffer to store the tracking data
+        let mut data = TirData {
+            frame: 0,
+            status: 0,
+            roll: 0.0,
+            pitch: 0.0,
+            yaw: 0.0,
+            tx: 0.0,
+            ty: 0.0,
+            tz: 0.0,
+            padding: [0.0; 9],
+            cksum: 0,
         };
 
-        // Set x and y axis on joystick
-        joystick.set_axis(1, joystick_xy.x)?;
-        joystick.set_axis(2, joystick_xy.y)?;
-        
-        vjoy.update_device_state(&joystick)?; // Update vjoy device
+        loop {
+            // Call the NP_GetData function to get the tracking data
+            let result = np_get_data(&mut data as *mut TirData);
+            if result == 0 {
+                // Print the data to verify its content
+                println!("{:?}", data);
+            } else {
+                eprintln!("Failed to get data from NP_GetData, error code: {}", result);
+            }
 
-        sleep(Duration::from_millis(1)); // Wait 1ms
+            // Sleep for a while before reading again
+            sleep(Duration::from_secs(1));
+        }
     }
-
 }
